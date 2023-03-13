@@ -1,5 +1,6 @@
 import pytest
 
+
 @pytest.mark.skip("Impossible to succeed yet")
 def test_create_group():
     pass

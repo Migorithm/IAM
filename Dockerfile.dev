@@ -1,0 +1,18 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+RUN apt-get update 
+RUN apt-get -y install build-essential
+RUN pip3 install poetry
+
+WORKDIR /code
+
+COPY pyproject.toml pyproject.toml
+COPY poetry.lock poetry.lock
+
+RUN poetry config virtualenvs.create false
+RUN poetry install
+
+COPY . /code

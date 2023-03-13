@@ -1,0 +1,80 @@
+[tool.mypy]
+plugins = ["sqlalchemy.ext.mypy.plugin"]
+ignore_missing_imports = 'True'
+
+[tool.pytest.ini_options]
+addopts = "-s -v --tb=auto"
+
+testpaths = "tests"
+
+env = "STAGE=testing"
+
+[tool.ruff]
+exclude = [
+    ".eggs",
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+]
+line-length = 120
+target-version = "py311"
+
+
+[tool.poetry]
+name = "iam_service-server-v2"
+version = "2.0.0"
+description = "iam_service-server-v2"
+authors = ["Migorithm","aquatype"]
+readme = "README.md"
+
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "*"
+pytest = "*"
+python-multipart = "*"
+sqlalchemy2-stubs = "*"
+sqlalchemy = "*"
+asyncpg = "*"
+greenlet = "*"
+uvicorn = "*"
+fastapi_utils = "*"
+httpx = "*"
+types-python-dateutil = "*"
+types-redis = "*"
+uvloop = "*"
+
+
+[tool.poetry.group.dev.dependencies]
+ruff = "*"
+mypy = "*"
+coverage = "*"
+rope = "*"
+Faker = "*"
+pytest-asyncio = "*"
+pytest = "*"
+pytest-cov = "*"
+pytest-env = "*"
+pytest-dotenv = "*"
+black = "*"
+types-requests = "*"
+debugpy = "*"
+bandit = "*"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

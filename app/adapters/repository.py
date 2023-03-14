@@ -10,7 +10,11 @@ from app.utils.events.recorder import (
     ApplicationRecorder,
     PostgresApplicationRecorder,
 )
+from app.adapters.eventstore import event_store
 from app.utils.models import aggregate_root
+
+
+TAggregate = TypeVar("TAggregate", bound=aggregate_root.Aggregate)
 
 
 class AbstractRepository(ABC):
@@ -46,9 +50,6 @@ class AbstractRepository(ABC):
     @abstractmethod
     async def _get(self, ref):
         raise NotImplementedError
-
-
-TAggregate = TypeVar("TAggregate", bound=aggregate_root.Aggregate)
 
 
 class AbstractSqlAlchemyRepository(AbstractRepository):
@@ -91,7 +92,9 @@ class EventStoreProxy(AbstractSqlAlchemyRepository):
     ):
         self.mapper: Mapper[aggregate_root.Aggregate.Event] = Mapper()
         self.recorder: ApplicationRecorder = (
-            PostgresApplicationRecorder(session=session)
+            PostgresApplicationRecorder(
+                session=session, event_table_name=event_store.name
+            )
             if recorder is None
             else recorder
         )

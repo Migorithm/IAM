@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from sqlalchemy.orm import clear_mappers, sessionmaker
-from sqlalchemy import text
 from app.adapters.orm import start_mappers, metadata
 from app.adapters.eventstore import (
     start_mappers as start_es_mapper,
@@ -36,6 +35,7 @@ async def aio_engine():
         await conn.run_sync(es_metadata.drop_all)
         await conn.run_sync(metadata.create_all)
         await conn.run_sync(es_metadata.create_all)
+
     start_mappers()
     start_es_mapper()
 
@@ -57,18 +57,16 @@ async def session_factory(aio_engine: AsyncEngine):
         )
         yield scoped_session
 
+    async with aio_engine.begin() as cleaner:
+        await cleaner.run_sync(metadata.drop_all)
+        await cleaner.run_sync(es_metadata.drop_all)
+        await cleaner.run_sync(metadata.create_all)
+        await cleaner.run_sync(es_metadata.create_all)
+
 
 @pytest_asyncio.fixture(scope="function")
 async def session(session_factory: async_scoped_session):
     s: AsyncSession = session_factory()
     yield s
-
-    for table in metadata.tables.keys():
-        delete_stmt = f"DELETE FROM {table};"
-        await s.execute(text(delete_stmt))
-    for es_tb in es_metadata.tables.keys():
-        delete_stmt = f"DELETE FROM {es_tb};"
-        await s.execute(text(delete_stmt))
-
     await s.commit()
     await s.close()

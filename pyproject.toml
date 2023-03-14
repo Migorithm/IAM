@@ -4,10 +4,12 @@ ignore_missing_imports = 'True'
 
 [tool.pytest.ini_options]
 addopts = "-s -v --tb=auto"
-
 testpaths = "tests"
 
-env = "STAGE=testing"
+env = [
+    "STAGE=testing",
+    "SQLALCHEMY_WARN_20=1"
+]
 
 [tool.ruff]
 exclude = [

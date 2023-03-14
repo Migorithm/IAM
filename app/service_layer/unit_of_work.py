@@ -7,16 +7,16 @@ from asyncio import current_task
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_scoped_session
 
-from app.adapters.repository import EventStoreProxy, SqlAlchemyRepository, TAggregate
+from app.adapters.repository import EventStoreProxy, TAggregate
 from app.db import async_transactional_session
-from app.domain import iam
+
 
 DEFAULT_SESSION_TRANSACTIONAL_SESSION_FACTORY = async_transactional_session
 
 
 class AbstractUnitOfWork(Generic[TAggregate], ABC):
-    users: SqlAlchemyRepository[TAggregate]
-    groups: SqlAlchemyRepository[TAggregate]
+    users: EventStoreProxy
+    groups: EventStoreProxy
 
     async def commit(self):
         await self._commit()
@@ -24,10 +24,10 @@ class AbstractUnitOfWork(Generic[TAggregate], ABC):
     async def rollback(self):
         await self._rollback()
 
-    def collect_new_events(self):
-        for obj in self.users.seen:
-            while obj.events:
-                yield obj.events.popleft()
+    # def collect_new_events(self):
+    #     for obj in self.users.seen:
+    #         while obj.events:
+    #             yield obj.events.popleft()
 
     async def __aenter__(self) -> AbstractUnitOfWork:
         return self
@@ -60,10 +60,9 @@ class SqlAlchemyUnitOfWork(AbstractUnitOfWork):
         self.event_store: EventStoreProxy = EventStoreProxy(
             session=self.session,
         )
-        self.posts: EventStoreProxy = weakref.proxy(self.event_store)
 
-        self.users = SqlAlchemyRepository(model=iam.User, session=self.session)
-        self.groups = SqlAlchemyRepository(model=iam.Group, session=self.session)
+        self.users = weakref.proxy(self.event_store)
+        self.groups = weakref.proxy(self.event_store)
 
         return await super().__aenter__()
 

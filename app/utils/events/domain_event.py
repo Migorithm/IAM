@@ -6,7 +6,7 @@ from . import meta
 
 class DomainEvent(meta.ImmutableObject):
     id: UUID
-    version: int
+    version: int = 0
     timestamp: datetime
     notifiable: bool = False
 
@@ -19,8 +19,7 @@ class StoredEvent(meta.ImmutableObject):
 
 
 class OutBoxEvent(meta.ImmutableObject):
-    id: str
-    version: int
+    aggregate_id: str
     topic: str
     state: bytes
     processed: bool = False

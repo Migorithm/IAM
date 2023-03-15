@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Protocol, Sequence
+from typing import Sequence
 from uuid import UUID
 
 from sqlalchemy import text
@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from ..models.eventstore import EventStore
-from .domain_event import DomainEvent, Notification, StoredEvent
+from .domain_event import Notification, OutBoxEvent, StoredEvent
 
 
 class Recorder(ABC):
@@ -47,7 +47,7 @@ class PostgresAggregateRecorder(AggregateRecorder):
         self,
         session: AsyncSession,
         event_table_name: str = "iam_event_store",
-        outbox_table_name="iam_outbox",
+        outbox_table_name="iam_service_outbox",
     ) -> None:
         self.session = session
 
@@ -62,12 +62,14 @@ class PostgresAggregateRecorder(AggregateRecorder):
     def events_table(self) -> str:
         return self._events_table
 
-    async def add(self, stored_events: Sequence[StoredEvent], **kwargs) -> None:
+    async def add(
+        self, stored_events: Sequence[StoredEvent | OutBoxEvent], **kwargs
+    ) -> None:
         await self._insert_events(stored_events, **kwargs)
 
     async def _insert_events(
         self,
-        events: Sequence[StoredEvent | DomainEvent],
+        events: Sequence[StoredEvent | OutBoxEvent],
         *,
         tb_name: str | None = None,
         **kwargs,
@@ -135,27 +137,3 @@ class PostgresApplicationRecorder(PostgresAggregateRecorder):
         q = await self.session.execute(stmt)
 
         return q.scalar_one_or_none() or 0
-
-
-class ApplicationRecorder(Protocol):
-    @property
-    def outbox_table(self) -> str:
-        ...
-
-    @property
-    def events_table(self) -> str:
-        ...
-
-    async def add(self, stored_events: Sequence[StoredEvent], **kwargs) -> None:
-        ...
-
-    async def get(
-        self,
-        aggregate_id: UUID,
-        # TODO condition
-        # gt: int|None = None,
-        # lte: int|None = None,
-        # desc: bool|None = False,
-        # limit: int|None =None
-    ) -> list[StoredEvent]:
-        ...

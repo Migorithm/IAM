@@ -2,7 +2,7 @@ import pytest
 from sqlalchemy.ext.asyncio import async_scoped_session
 from sqlalchemy.future import select
 from sqlalchemy.engine import Result
-from app.domain import commands, iam, eventstore
+from app.domain import commands, iam, eventstore, outbox
 from app.service_layer.unit_of_work import SqlAlchemyUnitOfWork
 from app.service_layer.handlers import IAMService
 
@@ -27,7 +27,6 @@ async def test_create_user(session_factory: async_scoped_session):
     assert user.id == rec.id
 
 
-@pytest.mark.skip("Impossible to succeed yet")
 @pytest.mark.asyncio
 async def test_create_group(session_factory: async_scoped_session):
     name = "Migo"
@@ -47,6 +46,17 @@ async def test_create_group(session_factory: async_scoped_session):
 
     user: iam.User = await uow.users.get(user_id)
     assert user.id == user_id
+
+    async with uow:
+        ob: outbox.OutBox
+        [ob] = await uow.outboxes.list()
+        assert ob.aggregate_id == user_id
+        assert ob.processed is False
+        assert isinstance(ob.state, bytes)
+        assert ob.event is not None
+        assert isinstance(ob.event, iam.User.CreateGroupRequested)
+        assert ob.event.id == user_id
+        assert ob.event.group_id is not None
 
 
 @pytest.mark.skip("Impossible to succeed yet")

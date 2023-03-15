@@ -209,9 +209,11 @@ class Mapper(Generic[TDomainEvent], metaclass=SignletonMeta):
         if not hasattr(self, "transcoder"):
             self.transcoder = transcoder
 
-    def from_domain_event(self, domain_event: TDomainEvent) -> StoredEvent:
+    def _parse_domain_event(
+        self, domain_event: TDomainEvent
+    ) -> tuple[UUID, int, str, bytes]:
         """
-        Maps a domain event object to a new stored event object
+        Parses a domain event object returning id, version, topic, state
         """
         topic: str = resolver.get_topic(domain_event.__class__)
         d: dict = copy(domain_event.__dict__)
@@ -225,6 +227,13 @@ class Mapper(Generic[TDomainEvent], metaclass=SignletonMeta):
             state = self.compressor.compress(state)
         if self.cipher:
             state = self.cipher.encrypt(state)
+        return _id, _version, topic, state
+
+    def from_domain_event(self, domain_event: TDomainEvent) -> StoredEvent:
+        """
+        Maps a domain event object to a new stored event object
+        """
+        _id, _version, topic, state = self._parse_domain_event(domain_event)
 
         return StoredEvent(  # type: ignore
             id=_id,
@@ -253,27 +262,14 @@ class Mapper(Generic[TDomainEvent], metaclass=SignletonMeta):
         domain_event: TDomainEvent = object.__new__(cls)
         return domain_event.from_kwargs(**d)
 
-    # TODO Finish the following 15/May
     def from_domain_event_to_outbox(self, domain_event: TDomainEvent) -> OutBoxEvent:
         """
         Maps a domain event object to a Outbox Event
         """
-        topic: str = resolver.get_topic(domain_event.__class__)
-        d: dict = copy(domain_event.__dict__)
-        _id = d.pop("id")
-        _id = str(_id) if isinstance(_id, UUID) else _id
-        _version = d.pop("version")
-
-        state: bytes = self.transcoder.encode(d)
-
-        if self.compressor:
-            state = self.compressor.compress(state)
-        if self.cipher:
-            state = self.cipher.encrypt(state)
+        _id, _, topic, state = self._parse_domain_event(domain_event)
 
         return OutBoxEvent(  # type: ignore
-            id=_id,
-            version=_version,
+            aggregate_id=_id,
             topic=topic,
             state=state,
         )

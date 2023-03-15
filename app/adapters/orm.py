@@ -1,7 +1,18 @@
-from sqlalchemy import Column, ForeignKey, Integer, MetaData, String, Table, Boolean
+from sqlalchemy import (
+    Column,
+    ForeignKey,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    Boolean,
+    func,
+    text,
+)
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import registry, relationship
 from app.domain import iam
+from app.domain import outbox
 
 metadata = MetaData()
 mapper_registry = registry(metadata=metadata)
@@ -40,6 +51,27 @@ group_role_user_associations = Table(
     mapper_registry.metadata,
     Column("user_id", ForeignKey(users.name + ".id"), primary_key=True),
     Column("group_role_id", ForeignKey(group_roles.name + ".id"), primary_key=True),
+)
+
+outboxes = Table(
+    "iam_service_outbox",
+    mapper_registry.metadata,
+    Column(
+        "create_dt",
+        postgresql.TIMESTAMP(timezone=True),
+        default=func.now(),
+        server_default=func.now(),
+    ),
+    Column(
+        "id",
+        postgresql.UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    ),
+    Column("aggregate_id", postgresql.UUID(as_uuid=True)),
+    Column("topic", String, nullable=False),
+    Column("state", postgresql.BYTEA, nullable=False),
+    Column("processed", Boolean, server_default="f"),
 )
 
 
@@ -97,4 +129,10 @@ def start_mappers():
                 collection_class=set,
             )
         },
+        eager_defaults=True,
+    )
+    mapper_registry.map_imperatively(
+        outbox.OutBox,
+        outboxes,
+        eager_defaults=True,
     )

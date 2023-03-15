@@ -150,6 +150,7 @@ class User(aggregate_root.Aggregate, PermissionControl):
         name: str
         user_id: UUID
         group_id: UUID
+        notifiable: bool = True
 
 
 @dataclass(eq=False)

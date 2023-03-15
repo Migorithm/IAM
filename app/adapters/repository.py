@@ -8,7 +8,7 @@ from sqlalchemy.future import select
 from app.utils.events.mapper import Mapper
 from app.utils.events.recorder import (
     ApplicationRecorder,
-    PostgresApplicationRecorder,
+    PostgresAggregateRecorder,
 )
 from app.adapters.eventstore import event_store
 from app.utils.models import aggregate_root
@@ -92,7 +92,7 @@ class EventStoreProxy(AbstractSqlAlchemyRepository):
     ):
         self.mapper: Mapper[aggregate_root.Aggregate.Event] = Mapper()
         self.recorder: ApplicationRecorder = (
-            PostgresApplicationRecorder(
+            PostgresAggregateRecorder(
                 session=session, event_table_name=event_store.name
             )
             if recorder is None
@@ -103,8 +103,22 @@ class EventStoreProxy(AbstractSqlAlchemyRepository):
         pending_events = []
         for agg in aggregate:
             pending_events += list(agg._collect_())
+
+        # To Outbox
         await self.recorder.add(
-            list(map(self.mapper.from_domain_event, pending_events)), **kwargs
+            tuple(
+                map(
+                    self.mapper.from_domain_event,
+                    filter(lambda x: x.notifiable, pending_events),
+                )
+            ),
+            tb_name=self.recorder.outbox_table,
+            **kwargs
+        )
+
+        # To Aggregate
+        await self.recorder.add(
+            tuple(map(self.mapper.from_domain_event, pending_events)), **kwargs
         )
 
     async def _get(

@@ -8,6 +8,7 @@ class DomainEvent(meta.ImmutableObject):
     id: UUID
     version: int
     timestamp: datetime
+    notifiable: bool = False
 
 
 class StoredEvent(meta.ImmutableObject):
@@ -15,6 +16,14 @@ class StoredEvent(meta.ImmutableObject):
     version: int
     topic: str
     state: bytes  # Payload
+
+
+class OutBoxEvent(meta.ImmutableObject):
+    id: str
+    version: int
+    topic: str
+    state: bytes
+    processed: bool = False
 
 
 class Notification(StoredEvent):

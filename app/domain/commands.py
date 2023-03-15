@@ -29,6 +29,7 @@ class MakePurchase(ImmutableObject):
 
 class RequestCreateGroup(ImmutableObject):
     name: str
+    user_id: UUID
 
 
 class CreateGroupRole(ImmutableObject):

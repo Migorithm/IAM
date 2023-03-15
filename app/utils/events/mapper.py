@@ -14,7 +14,7 @@ from asyncpg.pgproto import pgproto
 from .meta import SignletonMeta
 
 from .. import resolver
-from .domain_event import DomainEvent, StoredEvent
+from .domain_event import DomainEvent, StoredEvent, OutBoxEvent
 
 
 # Protocols
@@ -218,6 +218,7 @@ class Mapper(Generic[TDomainEvent], metaclass=SignletonMeta):
         _id = d.pop("id")
         _id = str(_id) if isinstance(_id, UUID) else _id
         _version = d.pop("version")
+
         state: bytes = self.transcoder.encode(d)
 
         if self.compressor:
@@ -251,3 +252,28 @@ class Mapper(Generic[TDomainEvent], metaclass=SignletonMeta):
         assert issubclass(cls, DomainEvent)
         domain_event: TDomainEvent = object.__new__(cls)
         return domain_event.from_kwargs(**d)
+
+    # TODO Finish the following 15/May
+    def from_domain_event_to_outbox(self, domain_event: TDomainEvent) -> OutBoxEvent:
+        """
+        Maps a domain event object to a Outbox Event
+        """
+        topic: str = resolver.get_topic(domain_event.__class__)
+        d: dict = copy(domain_event.__dict__)
+        _id = d.pop("id")
+        _id = str(_id) if isinstance(_id, UUID) else _id
+        _version = d.pop("version")
+
+        state: bytes = self.transcoder.encode(d)
+
+        if self.compressor:
+            state = self.compressor.compress(state)
+        if self.cipher:
+            state = self.cipher.encrypt(state)
+
+        return OutBoxEvent(  # type: ignore
+            id=_id,
+            version=_version,
+            topic=topic,
+            state=state,
+        )

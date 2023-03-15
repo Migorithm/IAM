@@ -32,7 +32,7 @@ def test_make_purchase():
 def test_create_group_request():
     user = helpers.user_factory()
 
-    cmd = commands.RequestCreateGroup(name="SVB")
+    cmd = commands.RequestCreateGroup(name="SVB", user_id=user.id)
     user.execute(cmd)
     assert len(user.events) == 2
     assert isinstance(user.events[-1], iam.User.CreateGroupRequested)

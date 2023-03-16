@@ -85,17 +85,20 @@ class AbstractSqlAlchemyRepository(AbstractRepository):
 
 class SqlAlchemyRepository(Generic[TAggregate], AbstractSqlAlchemyRepository):
     def __init__(self, model: TAggregate, session: AsyncSession):
-        self.backlogs: deque = deque()
         self.model = model
         self.session = session
         self._base_query = select(self.model)
+        self.external_backlogs: deque[aggregate_root.Aggregate.Event] = deque()
+        self.internal_backlogs: deque[aggregate_root.Aggregate.Event] = deque()
 
     def _add(self, *obj):
         self.session.add_all(obj)
 
     def _add_hook(self, *obj: TAggregate):
         for o in obj:
-            self.backlogs.extend(filter(lambda e: e.notifiable, o.events))
+            self.external_backlogs.extend(
+                filter(lambda e: e.externally_notifiable, o.events)
+            )
 
     async def _get(self, ref: str | UUID) -> aggregate_root.Aggregate | None:
         reference = str(ref) if isinstance(ref, UUID) else ref
@@ -154,11 +157,17 @@ class EventStoreProxy(AbstractSqlAlchemyRepository):
             if recorder is None
             else recorder
         )
-        self.backlogs: deque = deque()
+        self.external_backlogs: deque[aggregate_root.Aggregate.Event] = deque()
+        self.internal_backlogs: deque[aggregate_root.Aggregate.Event] = deque()
 
     def _add_hook(self, *obj: TAggregate):
         for o in obj:
-            self.backlogs.extend(filter(lambda e: e.notifiable, o.events))
+            self.external_backlogs.extend(
+                filter(lambda e: e.externally_notifiable, o.events)
+            )
+            self.internal_backlogs.extend(
+                filter(lambda e: e.internally_notifiable, o.events)
+            )
 
     async def _add(self, *aggregate: TAggregate, **kwargs) -> None:
         pending_events = []
@@ -170,7 +179,7 @@ class EventStoreProxy(AbstractSqlAlchemyRepository):
             tuple(
                 map(
                     self.mapper.from_domain_event_to_outbox,
-                    filter(lambda x: x.notifiable, pending_events),
+                    filter(lambda x: x.externally_notifiable, pending_events),
                 )
             ),
             tb_name=self.recorder.outbox_table,

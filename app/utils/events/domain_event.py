@@ -8,7 +8,12 @@ class DomainEvent(meta.ImmutableObject):
     id: UUID
     version: int = 0
     timestamp: datetime
-    notifiable: bool = False
+    externally_notifiable: bool = (
+        False  # Boolean value to check if it is 'externally' notifiable event
+    )
+    internally_notifiable: bool = (
+        False  # Boolean value to check if it is 'internally' notifiable event
+    )
 
 
 class StoredEvent(meta.ImmutableObject):

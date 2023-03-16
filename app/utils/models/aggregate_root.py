@@ -60,7 +60,8 @@ class Aggregate:
             id = kwargs.pop("id")
             version = kwargs.pop("version")
             create_dt = kwargs.pop("timestamp")
-            kwargs.pop("notifiable")
+            kwargs.pop("externally_notifiable")
+            kwargs.pop("internally_notifiable")
             # Get the root class from topicm, using helper function
             aggregate_class = resolver.resolve_topic(kwargs.pop("topic"))
 

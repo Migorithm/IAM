@@ -1,5 +1,6 @@
 from __future__ import annotations
-from typing import Generic
+from collections import deque
+from typing import Generic, Literal
 
 import weakref
 from abc import ABC, abstractmethod
@@ -26,14 +27,18 @@ class AbstractUnitOfWork(Generic[TAggregate], ABC):
     async def rollback(self):
         await self._rollback()
 
-    def collect_backlogs(self):
-        # TODO sorting out notifiable event VS event within a bounded context
-        while self.users.backlogs:
-            yield self.users.backlogs.popleft()
-        while self.groups.backlogs:
-            yield self.users.backlogs.popleft()
-        while self.outboxes.backlogs:
-            yield self.outboxes.backlogs.popleft()
+    def collect_backlogs(
+        self,
+        in_out: Literal["internal_backlogs", "external_backlogs"] = "external_backlogs",
+    ):
+        # TODO sorting out externally_notifiable event VS event within a bounded context
+        backlogs: deque
+        while backlogs := getattr(self.users, in_out):
+            yield backlogs.popleft()
+        while backlogs := getattr(self.groups, in_out):
+            yield backlogs.popleft()
+        while backlogs := getattr(self.outboxes, in_out):
+            yield backlogs.popleft()
 
     async def __aenter__(self) -> AbstractUnitOfWork:
         return self

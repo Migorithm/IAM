@@ -6,12 +6,16 @@ from app.domain import enums
 from dataclasses import field
 
 
-class CreateUser(ImmutableObject):
+class Command(ImmutableObject):
+    pass
+
+
+class CreateUser(Command):
     name: str
     email: str = ""
 
 
-class MakePurchase(ImmutableObject):
+class MakePurchase(Command):
     requested_access: list[enums.AccessPermission] = field(default_factory=list)
     is_group_purchase: bool = False
 
@@ -27,12 +31,12 @@ class MakePurchase(ImmutableObject):
         return AssignPermission(requested_access=self.requested_access)  # type: ignore
 
 
-class RequestCreateGroup(ImmutableObject):
+class RequestCreateGroup(Command):
     name: str
     user_id: UUID
 
 
-class CreateGroupRole(ImmutableObject):
+class CreateGroupRole(Command):
     role_name: str
     group_permissions: list[enums.GroupPermission]
 
@@ -45,21 +49,21 @@ class CreateGroupRole(ImmutableObject):
         return self
 
 
-class CreateGroupLevelPurchase(ImmutableObject):
+class CreateGroupLevelPurchase(Command):
     requested_access: enums.AccessPermission
 
 
-class AddUser(ImmutableObject):
+class AddUser(Command):
     user_id: UUID
     group_id: UUID
 
 
-class AssignGroupRole(ImmutableObject):
+class AssignGroupRole(Command):
     user_id: UUID
     group_id: UUID
 
 
-class AssignPermission(ImmutableObject):
+class AssignPermission(Command):
     requested_access: list[enums.AccessPermission] = field(default_factory=list)
 
     def _refine_command(self) -> AssignPermission:
@@ -70,15 +74,15 @@ class AssignPermission(ImmutableObject):
         return self
 
 
-class DeleteUser(ImmutableObject):
+class DeleteUser(Command):
     ...
 
 
-class ExpirePermission(ImmutableObject):
+class ExpirePermission(Command):
     expired_permissions: list[int]
 
 
-class CreateGroup(ImmutableObject):
+class CreateGroup(Command):
     name: str
     user_id: UUID
     group_id: UUID

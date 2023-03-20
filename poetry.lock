@@ -179,7 +179,7 @@ files = [
 name = "cffi"
 version = "1.15.1"
 description = "Foreign Function Interface for Python calling C code."
-category = "main"
+category = "dev"
 optional = false
 python-versions = "*"
 files = [
@@ -347,7 +347,7 @@ toml = ["tomli"]
 name = "cryptography"
 version = "39.0.2"
 description = "cryptography is a package which provides cryptographic recipes and primitives to Python developers."
-category = "main"
+category = "dev"
 optional = false
 python-versions = ">=3.6"
 files = [
@@ -823,7 +823,7 @@ testing = ["pytest", "pytest-benchmark"]
 name = "pycparser"
 version = "2.21"
 description = "C parser in Python"
-category = "main"
+category = "dev"
 optional = false
 python-versions = ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*"
 files = [
@@ -1356,7 +1356,7 @@ pbr = ">=2.0.0,<2.1.0 || >2.1.0"
 name = "types-pyopenssl"
 version = "23.0.0.4"
 description = "Typing stubs for pyOpenSSL"
-category = "main"
+category = "dev"
 optional = false
 python-versions = "*"
 files = [
@@ -1371,7 +1371,7 @@ cryptography = ">=35.0.0"
 name = "types-python-dateutil"
 version = "2.8.19.10"
 description = "Typing stubs for python-dateutil"
-category = "main"
+category = "dev"
 optional = false
 python-versions = "*"
 files = [
@@ -1383,7 +1383,7 @@ files = [
 name = "types-redis"
 version = "4.5.1.5"
 description = "Typing stubs for redis"
-category = "main"
+category = "dev"
 optional = false
 python-versions = "*"
 files = [
@@ -1501,4 +1501,4 @@ test = ["Cython (>=0.29.32,<0.30.0)", "aiohttp", "flake8 (>=3.9.2,<3.10.0)", "my
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.11"
-content-hash = "b4f0c0f9de7c61a147f205a596ae313792bd7529df3b64efc5b3ee69168b057f"
+content-hash = "11355e99b86cd9e98826d7d156a5109b0f3037b9174c3ba4e8018eec520ef94c"

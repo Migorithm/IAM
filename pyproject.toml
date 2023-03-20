@@ -56,12 +56,12 @@ greenlet = "*"
 uvicorn = "*"
 fastapi_utils = "*"
 httpx = "*"
-types-python-dateutil = "*"
-types-redis = "*"
 uvloop = "*"
 
 
 [tool.poetry.group.dev.dependencies]
+types-python-dateutil = "*"
+types-redis = "*"
 ruff = "*"
 mypy = "*"
 coverage = "*"

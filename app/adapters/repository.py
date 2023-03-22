@@ -188,7 +188,8 @@ class EventStoreProxy(AbstractSqlAlchemyRepository):
 
         # To Aggregate
         await self.recorder.add(
-            tuple(map(self.mapper.from_domain_event, pending_events)), **kwargs
+            tuple(map(self.mapper.from_domain_event_to_stored_event, pending_events)),
+            **kwargs,
         )
 
     async def _get(
@@ -198,7 +199,7 @@ class EventStoreProxy(AbstractSqlAlchemyRepository):
         aggregate = None
 
         for domain_event in map(
-            self.mapper.to_domain_event,
+            self.mapper.from_stored_event_to_domain_event,
             await self.recorder.get(aggregate_id=aggregate_id),
         ):
             aggregate = domain_event.mutate(aggregate)

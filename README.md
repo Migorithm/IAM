@@ -192,6 +192,229 @@ class User(aggregate_root.Aggregate):
         return super()._create_(cls.Created, name=msg.name, email=msg.email)
 
 ```
-Here, you can see that `User` is an aggregate that inherit `Aggregate` abstract class and its `create()` method calls for its super class's `_create_()`.<br>
+Here, you can see that `User` is an aggregate that inherit `Aggregate` abstract class and its `create()` method calls for its super class's `_create_()`.<br><br>
+
+
+
+### Mapper
+When event-sourced model is chosen as source of truth for entire system by which a lot of different read models could be made,
+we have to think about how we can store different types of events in a common format. `Mapper` is what enables storing them in a organized way.
+A mapper consists of three potential components:<br>
+- `transcoder`
+- `cipher`
+- `compressor`
+
+As you can guess through their name, the role of each component is self-evident. There is no clear naming convention for the method and its signature, but
+they will look like the following:<br>
+
+```python
+#app.utils.events.mapper
+@dataclass
+class Mapper(Generic[TDomainEvent], metaclass=SignletonMeta):
+    transcoder: AbstractTranscoder = field(init=False)
+    cipher: Cipher | None = None
+    compressor: Compressor | None = None
+
+    def __post_init__(self):
+        if not hasattr(self, "transcoder"):
+            self.transcoder = transcoder
+
+    def _convert_domain_event(
+        self, domain_event: TDomainEvent
+    ) -> tuple[UUID, int, str, bytes]:
+        """
+        Parses a domain event object returning id, version, topic, state
+        """
+        topic: str = resolver.get_topic(domain_event.__class__)
+        d: dict = copy(domain_event.__dict__)
+        _id = d.pop("id")
+        _id = str(_id) if isinstance(_id, UUID) else _id
+        _version = d.pop("version")
+
+        state: bytes = self.transcoder.encode(d)
+
+        if self.compressor:
+            state = self.compressor.compress(state)
+        if self.cipher:
+            state = self.cipher.encrypt(state)
+        return _id, _version, topic, state
+    ...
+
+```
+Firstly, `_convert_domain_event()` takes domain event raised from an aggregate, and takes the following from the domain event:
+- aggregate_id
+- version of the given aggregate
+- state of an aggregate 
+
+Note how all the state of aggregate is encoded into bytes using transcoder. 
+
+#### Transcoder & Transcoding
+Transcoder should take a role of encoding and decoding state of an aggregate so you publish or store the event to any other external components.
+So, the abstract transcoder class has essentially two methods:
+```python
+#app.utils.events.mapper
+class AbstractTranscoder(ABC):
+    """
+    Abstract base class for transcoders
+    """
+
+    @abstractmethod
+    def encode(self, o: Any) -> bytes:
+        pass
+
+    @abstractmethod
+    def decode(self, d: bytes) -> Any:
+        pass
+```
+How the encode and decode is done is implementation detail. In this project, I used `JSONEncoder` and `JSONDecoder` from standard library. 
+
+```python
+#app.utils.events.mapper
+@dataclass
+class Transcoder(Generic[TTranscoding], AbstractTranscoder):
+    types: dict[type, Transcoding] = field(default_factory=dict)
+    names: dict[str, Transcoding] = field(default_factory=dict)
+    encoder: json.JSONEncoder = field(init=False)
+    decoder: json.JSONDecoder = field(init=False)
+
+    def __post_init__(self):
+        self.encoder = json.JSONEncoder(default=self._encode_dict)
+        self.decoder = json.JSONDecoder(object_hook=self._decode_dict)
+
+    def _encode_dict(self, o: Any) -> dict[str, str | dict]:
+        try:
+            transcoding: Transcoding = self.types[type(o)]
+        except KeyError:
+            raise TypeError(
+                f"Object of type {o.__class__.__name__} is not serializable!"
+            )
+        else:
+            return {
+                "__type__": transcoding.name,
+                "__data__": transcoding.encode(o),
+            }
+
+    def _decode_dict(self, d: dict[str, str | dict]) -> Any:
+        if set(d.keys()) == {"__type__", "__data__"}:
+            t = d["__type__"]
+            t = cast(str, t)
+            transcoding = self.names[t]
+            return transcoding.decode(d["__data__"])
+        else:
+            return d
+
+    def encode(self, o: Any) -> bytes:
+        return self.encoder.encode(o).encode("utf8")
+
+    def decode(self, d: bytes) -> Any:
+        return self.decoder.decode(d.decode("utf8"))
+
+```
+So, encoder is initialized in `__post_init__` method using `_encode_dict` method which takes any type and looks up the key with `self.types`, which means
+there must be encoderable and decorable transcoding registration process; that will be convered soon. Getting back to `_encode_dict`, it returns dictionary of
+`__type__` key with the value of the name of transcoding, and `__data__` with the value of encoded data. As a side note, `json.JSONEncoder` has its own method 
+called `encode(o)` which takes any object. When it does NOT know how to encode the type, `default` method of `json.JSONEncoder` is called, going through the custom, 
+`_encode_dict` method. The big picture is therefore, when the public interface `encode` method is invoked, it uses `json.JSONEncoder` by default and when it can't find the way
+to encode the given object, it then relies on `_encode_dict`. Finally, all encoded dictionary is convereted to `utf8` by `.encode('utf8')` attached at the end.<br><br>
+
+Now, let's look at how we register transcoding for inencoderable types:
+```python
+#app.utils.events.mapper
+class Transcoding(ABC):
+    type: type
+    name: str
+
+    @staticmethod
+    @abstractmethod
+    def encode(o: Any) -> str | dict:
+        pass
+
+    @staticmethod
+    @abstractmethod
+    def decode(d: str | dict) -> Any:
+        pass
+
+
+@dataclass
+class Transcoder(Generic[TTranscoding], AbstractTranscoder):
+    ...
+
+    #decorator for registeration of transcodings
+    def register(self, transcoding: TTranscoding):
+        self.types[transcoding.type] = transcoding
+        self.names[transcoding.name] = transcoding
+    ...
+```
+
+Note that `register` method is added to register Transcoding in ad-hoc manner. Let's see how we can define transcoding for unserializable type. 
+```python
+#app.utils.events.mapper
+transcoder: Transcoder = Transcoder()
+
+@transcoder.register
+class UUIDAsHex(Transcoding):
+    type = UUID
+    name = "uuid_hex"
+
+    @staticmethod
+    def encode(o: UUID) -> str:
+        return o.hex
+
+    @staticmethod
+    def decode(d: str | dict) -> UUID:
+        assert isinstance(d, str)
+        return UUID(d)
+
+```
+Here, we override `encode` and `decode` to allow for encoding and decoding. You can apply similar approach to other types such as timestamp and decimal.<br><br>
+
+
+#### Converting domain event to stored event or another
+Now that we've gone through all the transcoding details, let's see how we can convert domain event to another using mapper.
+```python
+from .domain_event import DomainEvent, StoredEvent, OutBoxEvent
+
+#app.utils.events.mapper
+TDomainEvent = TypeVar("TDomainEvent", bound=DomainEvent)
+
+@dataclass
+class Mapper(Generic[TDomainEvent], metaclass=SignletonMeta):
+    ...
+
+    def from_domain_event_to_stored_event(self, domain_event: TDomainEvent) -> StoredEvent:
+        _id, _version, topic, state = self._convert_domain_event(domain_event)
+
+        return StoredEvent(  # type: ignore
+            id=_id,
+            version=_version,
+            topic=topic,
+            state=state,
+        )
+
+    def from_domain_event_to_outbox(self, domain_event: TDomainEvent) -> OutBoxEvent:
+        _id, _, topic, state = self._convert_domain_event(domain_event)
+
+        return OutBoxEvent(  # type: ignore
+            aggregate_id=_id,
+            topic=topic,
+            state=state,
+        )
+
+    def from_stored_event_to_domain_event(self, stored: StoredEvent) -> TDomainEvent:
+        dictified_state = self._convert_stored_event(stored)
+        cls = resolver.resolve_topic(stored.topic)
+        assert issubclass(cls, DomainEvent)
+        domain_event: TDomainEvent = object.__new__(cls)
+        return domain_event.from_kwargs(**dictified_state)
+    ...
+```
+You can see that domain event is convereted firstly using `_convert_domain_event` method that applies
+comporession and encyprtion method if implemented together with encoding method to the event and render
+`StoredEvent` from `from_domain_event_to_stored_event` and `OutBoxEvent` from `from_domain_event_to_outbox`. 
+Outbox pattern is beyond the scope of this discussion but briefly it is a pattern to ensure event is not missing
+by storing an event in the same atomic transaction with domain event.<br><br>
+
+Conversely, you can also convert `StoredEvent` to `DomainEvent` using `from_stored_event_to_doamin_event` with the decoding strategy explained.
+
 
 

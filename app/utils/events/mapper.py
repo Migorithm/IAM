@@ -209,7 +209,7 @@ class Mapper(Generic[TDomainEvent], metaclass=SignletonMeta):
         if not hasattr(self, "transcoder"):
             self.transcoder = transcoder
 
-    def _parse_domain_event(
+    def _convert_domain_event(
         self, domain_event: TDomainEvent
     ) -> tuple[UUID, int, str, bytes]:
         """
@@ -229,23 +229,7 @@ class Mapper(Generic[TDomainEvent], metaclass=SignletonMeta):
             state = self.cipher.encrypt(state)
         return _id, _version, topic, state
 
-    def from_domain_event(self, domain_event: TDomainEvent) -> StoredEvent:
-        """
-        Maps a domain event object to a new stored event object
-        """
-        _id, _version, topic, state = self._parse_domain_event(domain_event)
-
-        return StoredEvent(  # type: ignore
-            id=_id,
-            version=_version,
-            topic=topic,
-            state=state,
-        )
-
-    def to_domain_event(self, stored: StoredEvent) -> TDomainEvent:
-        """
-        Maps a stored event object to a new domain event object
-        """
+    def _convert_stored_event(self, stored: StoredEvent) -> dict:
         state: bytes = stored.state
         if self.cipher:
             state = self.cipher.decrypt(state)
@@ -257,16 +241,38 @@ class Mapper(Generic[TDomainEvent], metaclass=SignletonMeta):
         else:
             d["id"] = stored.id
         d["version"] = stored.version
+        return d
+
+    def from_domain_event_to_stored_event(
+        self, domain_event: TDomainEvent
+    ) -> StoredEvent:
+        """
+        Maps a domain event object to a new stored event object
+        """
+        _id, _version, topic, state = self._convert_domain_event(domain_event)
+
+        return StoredEvent(  # type: ignore
+            id=_id,
+            version=_version,
+            topic=topic,
+            state=state,
+        )
+
+    def from_stored_event_to_domain_event(self, stored: StoredEvent) -> TDomainEvent:
+        """
+        Maps a stored event object to a new domain event object
+        """
+        dictified_state = self._convert_stored_event(stored)
         cls = resolver.resolve_topic(stored.topic)
         assert issubclass(cls, DomainEvent)
         domain_event: TDomainEvent = object.__new__(cls)
-        return domain_event.from_kwargs(**d)
+        return domain_event.from_kwargs(**dictified_state)
 
     def from_domain_event_to_outbox(self, domain_event: TDomainEvent) -> OutBoxEvent:
         """
         Maps a domain event object to a Outbox Event
         """
-        _id, _, topic, state = self._parse_domain_event(domain_event)
+        _id, _, topic, state = self._convert_domain_event(domain_event)
 
         return OutBoxEvent(  # type: ignore
             aggregate_id=_id,

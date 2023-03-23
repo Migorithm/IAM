@@ -417,4 +417,60 @@ by storing an event in the same atomic transaction with domain event.<br><br>
 Conversely, you can also convert `StoredEvent` to `DomainEvent` using `from_stored_event_to_doamin_event` with the decoding strategy explained.
 
 
+### Port-Adapter Pattern
+This project assumes port-adapter pattern, also known as hexagonal architecture so you can follow dependency inversion principle whereby you have
+NO dependency nor knowledge of the underlying infrastructure. So you can see that all the infra-related stuff including ORM mapping, eventstore, repository is 
+housed under adapters.<br>
+```
+app
+│   __init__.py
+│   config.py
+└───adapters
+│   │   __init__.py
+│   │   eventstore.py
+│   │   orm.py
+│   │   repository.py
+...
+```
+Here, you may be asking then without presentation layer, how can you receive client requests and respond to it? Well, the true benefit of having DIP here is that
+the entire application is not tied to a specific framework or solution - FastAPI, Redis, Kafka for example. It means that if you are to publish and comsume data to and from Kafka, for instance, 
+you can have its own dedicated entrypoints and also have FastAPI entrypoint separately, which would look like:<br>
+```
+app
+│   __init__.py
+│   config.py
+└───adapters
+│   │   __init__.py
+│   │   eventstore.py
+│   │   orm.py
+│   │   repository.py
+└───entrypoints
+│   │ kafka_entry.py
+│   │ fast_app.py
+...
+```
+What it indicates is that your application handles commands coming in from multiple different input sources with one version control system. And as you can imagine, the roles of entrypoint are
+basically making input understandable to your service by parsing, validating the data and putting the data into commands which were defined in domain layer and invoke an appropriate handler defined in servie layer.
+So the file architecture again would look like this:<br>
+
+```
+app
+│   __init__.py
+│   config.py
+└───adapters
+│   │   __init__.py
+│   │   eventstore.py
+│   │   orm.py
+│   │   repository.py
+└───entrypoint
+│   │ __init__.py
+│   │ kafka_entry.py
+│   │ fast_app.py
+└───domain
+│   │ __init__.py
+│   │ commands.py
+└───service_layer
+│   │ handlers.py
+...
+```
 

@@ -86,14 +86,14 @@ class SqlAlchemyRepository(Generic[TAggregate], AbstractSqlAlchemyRepository):
 
     async def _get(self, ref: str | UUID) -> aggregate_root.Aggregate | None:
         reference = str(ref) if isinstance(ref, UUID) else ref
-        q = await self.session.execute(
+        q: CursorResult = await self.session.execute(
             self._base_query.where(getattr(self.model, "id") == reference).limit(1)
         )
 
         return q.scalars().first()
 
     async def _list(self):
-        q = await self.session.execute(self._base_query)
+        q: CursorResult = await self.session.execute(self._base_query)
         return q.scalars().all()
 
 

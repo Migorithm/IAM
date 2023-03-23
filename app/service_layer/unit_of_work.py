@@ -6,14 +6,16 @@ import weakref
 from abc import ABC, abstractmethod
 from asyncio import current_task
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_scoped_session
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_scoped_session,
+    create_async_engine,
+)
 
 from app.adapters.repository import EventStoreProxy, TAggregate, OutboxRepository
-from app.db import async_transactional_session
 from app.domain.outbox import OutBox
-
-
-DEFAULT_SESSION_TRANSACTIONAL_SESSION_FACTORY = async_transactional_session
+from sqlalchemy.orm import sessionmaker
+from app import config
 
 
 class AbstractUnitOfWork(Generic[TAggregate], ABC):
@@ -53,6 +55,25 @@ class AbstractUnitOfWork(Generic[TAggregate], ABC):
     @abstractmethod
     async def _rollback(self):
         raise NotImplementedError
+
+
+engine = create_async_engine(
+    config.db_settings.get_uri(),
+    pool_pre_ping=True,
+    pool_size=10,
+    max_overflow=20,
+    future=True,
+)
+async_transactional_session = sessionmaker(
+    engine, expire_on_commit=False, class_=AsyncSession
+)
+autocommit_engine = engine.execution_options(isolation_level="AUTOCOMMIT")
+
+async_autocommit_session = sessionmaker(
+    autocommit_engine, expire_on_commit=False, class_=AsyncSession
+)
+
+DEFAULT_SESSION_TRANSACTIONAL_SESSION_FACTORY = async_transactional_session
 
 
 class SqlAlchemyUnitOfWork(AbstractUnitOfWork):

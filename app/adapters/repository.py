@@ -1,17 +1,16 @@
 from abc import ABC, abstractmethod
 from collections import deque
-from typing import Any, Generic, Protocol, Sequence, TypeVar
+from typing import Generic, Sequence, TypeVar
 from uuid import UUID
 from sqlalchemy import text
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.engine.row import RowMapping
+from sqlalchemy.engine.cursor import CursorResult
 from app.utils import resolver
+from app.utils.events.domain_event import OutBoxEvent, StoredEvent
 from app.utils.events.mapper import Mapper, transcoder, TDomainEvent
-from app.utils.events.recorder import (
-    PostgresAggregateRecorder,
-)
 from app.adapters.eventstore import event_store
 from app.utils.models import aggregate_root
 from app.domain.outbox import OutBox
@@ -20,38 +19,14 @@ from app.domain.outbox import OutBox
 TAggregate = TypeVar("TAggregate", bound=aggregate_root.Aggregate)
 
 
-class ApplicationRecorder(Protocol):
-    @property
-    def outbox_table(self) -> str:
-        ...
-
-    @property
-    def events_table(self) -> str:
-        ...
-
-    async def add(self, stored_events: Sequence[Any], **kwargs) -> None:
-        ...
-
-    async def get(
-        self,
-        aggregate_id: UUID,
-        # TODO condition
-        # gt: int|None = None,
-        # lte: int|None = None,
-        # desc: bool|None = False,
-        # limit: int|None =None
-    ) -> list[Any]:
-        ...
-
-
 class AbstractRepository(ABC):
     """Abstract Repository For Abstracting Persistence Layer"""
 
-    def add(self, *obj):
-        self._add_hook(*obj)
-        return self._add(*obj)
+    def add(self, *obj, **kwargs):
+        self._add_hook(*obj, **kwargs)
+        return self._add(*obj, **kwargs)
 
-    def _add_hook(self, *obj):
+    def _add_hook(self, *obj, **kwargs):
         pass
 
     async def get(self, ref: str | UUID, **kwargs):
@@ -67,7 +42,7 @@ class AbstractRepository(ABC):
         return res
 
     @abstractmethod
-    def _add(self, *obj):
+    def _add(self, *obj, **kwargs):
         raise NotImplementedError
 
     # @abstractmethod
@@ -77,6 +52,15 @@ class AbstractRepository(ABC):
     @abstractmethod
     async def _get(self, ref):
         raise NotImplementedError
+
+    class OperationalError(Exception):
+        pass
+
+    class IntegrityError(Exception):
+        pass
+
+    class AggregateNotFoundError(Exception):
+        pass
 
 
 class AbstractSqlAlchemyRepository(AbstractRepository):
@@ -125,7 +109,7 @@ class OutboxRepository(SqlAlchemyRepository, Generic[TDomainEvent]):
         WHERE processed is false
         """
         )
-        q = await self.session.execute(raw_query)
+        q: CursorResult = await self.session.execute(raw_query)
 
         return [
             OutBox(event=self.take_event(row._mapping), **row._mapping)
@@ -145,17 +129,79 @@ class OutboxRepository(SqlAlchemyRepository, Generic[TDomainEvent]):
         return event
 
 
-class EventStoreProxy(AbstractSqlAlchemyRepository):
+class EventStoreRepository(AbstractSqlAlchemyRepository):
     def __init__(
-        self, *, session: AsyncSession, recorder: ApplicationRecorder | None = None
-    ):
-        self.mapper: Mapper[aggregate_root.Aggregate.Event] = Mapper()
-        self.recorder: ApplicationRecorder = (
-            PostgresAggregateRecorder(
-                session=session, event_table_name=event_store.name
+        self,
+        session: AsyncSession,
+        event_table_name: str = "iam_event_store",
+        outbox_table_name="iam_service_outbox",
+    ) -> None:
+        self.session = session
+
+        self._events_table = event_table_name
+        self._outbox_table = outbox_table_name
+
+    async def _add(
+        self, stored_events: Sequence[StoredEvent | OutBoxEvent], **kwargs
+    ) -> None:
+        await self._insert_events(stored_events)
+
+    async def _insert_events(
+        self,
+        events: Sequence[StoredEvent | OutBoxEvent],
+        *,
+        tb_name: str | None = None,
+        **kwargs,
+    ) -> None:
+        if len(events) == 0:
+            return
+
+        tb_name = self._events_table if tb_name is None else tb_name
+        keys = tuple(events[0].__dict__.keys())
+
+        raw_query = text(
+            f"""
+            INSERT INTO {tb_name} ({",".join(keys)})
+            VALUES ({",".join((":"+k for k in keys))})
+        """
+        )
+        try:
+            await self.session.execute(
+                raw_query,
+                [e.__dict__ for e in events],
             )
-            if recorder is None
-            else recorder
+        except Exception as e:
+            raise self.IntegrityError(e)
+
+    async def _get(
+        self,
+        aggregate_id: UUID,
+        # gt: int | None = None,
+        # lte: int | None = None,
+        # desc: bool | None = False,
+        # limit: int | None = None
+    ) -> list[StoredEvent]:
+        # TODO need to add conditions
+        raw_query = text(
+            f"""
+            SELECT * FROM {self._events_table}
+            WHERE id = :id
+        """
+        )
+        c: CursorResult = await self.session.execute(raw_query, dict(id=aggregate_id))
+
+        stored_events = [
+            StoredEvent.from_kwargs(**row._mapping) for row in c.fetchall()
+        ]
+
+        return stored_events
+
+
+class EventStoreProxy(AbstractSqlAlchemyRepository):
+    def __init__(self, *, session: AsyncSession):
+        self.mapper: Mapper[aggregate_root.Aggregate.Event] = Mapper()
+        self.recorder: EventStoreRepository = EventStoreRepository(
+            session=session, event_table_name=event_store.name
         )
         self.external_backlogs: deque[aggregate_root.Aggregate.Event] = deque()
         self.internal_backlogs: deque[aggregate_root.Aggregate.Event] = deque()
@@ -182,7 +228,7 @@ class EventStoreProxy(AbstractSqlAlchemyRepository):
                     filter(lambda x: x.externally_notifiable, pending_events),
                 )
             ),
-            tb_name=self.recorder.outbox_table,
+            tb_name=self.recorder._outbox_table,
             **kwargs,
         )
 
@@ -200,13 +246,10 @@ class EventStoreProxy(AbstractSqlAlchemyRepository):
 
         for domain_event in map(
             self.mapper.from_stored_event_to_domain_event,
-            await self.recorder.get(aggregate_id=aggregate_id),
+            await self.recorder.get(aggregate_id),
         ):
             aggregate = domain_event.mutate(aggregate)
         if aggregate is None:
             raise self.AggregateNotFoundError
         assert isinstance(aggregate, aggregate_root.Aggregate)
         return aggregate
-
-    class AggregateNotFoundError(Exception):
-        pass

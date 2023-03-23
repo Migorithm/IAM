@@ -72,7 +72,6 @@ class SqlAlchemyRepository(Generic[TAggregate], AbstractSqlAlchemyRepository):
         self._base_query = select(self.model)
         self.external_backlogs: deque[aggregate_root.Aggregate.Event] = deque()
         self.internal_backlogs: deque[aggregate_root.Aggregate.Event] = deque()
-        self.mapper: Mapper[aggregate_root.Aggregate.Event] = Mapper()
 
     def _add(self, *obj):
         self.session.add_all(obj)
@@ -102,6 +101,7 @@ class SqlAlchemyRepository(Generic[TAggregate], AbstractSqlAlchemyRepository):
 class OutboxRepository(SqlAlchemyRepository):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.mapper: Mapper[aggregate_root.Aggregate.Event] = Mapper()
 
     def _add(self, *obj: aggregate_root.Aggregate.Event):
         """
@@ -127,8 +127,11 @@ class OutboxRepository(SqlAlchemyRepository):
             for row in q.fetchall()
         ]
 
+    async def _get(self):
+        raise NotImplementedError
 
-class EventStoreRepository(AbstractSqlAlchemyRepository):
+
+class EventRepository(AbstractSqlAlchemyRepository):
     def __init__(
         self,
         session: AsyncSession,
@@ -192,10 +195,10 @@ class EventStoreRepository(AbstractSqlAlchemyRepository):
         return stored_events
 
 
-class EventStoreProxy(AbstractSqlAlchemyRepository):
+class EventRepositoryProxy(AbstractSqlAlchemyRepository):
     def __init__(self, *, session: AsyncSession):
         self.mapper: Mapper[aggregate_root.Aggregate.Event] = Mapper()
-        self.recorder: EventStoreRepository = EventStoreRepository(
+        self.repository: EventRepository = EventRepository(
             session=session, event_table_name=event_store.name
         )
         self.external_backlogs: deque[aggregate_root.Aggregate.Event] = deque()
@@ -216,7 +219,7 @@ class EventStoreProxy(AbstractSqlAlchemyRepository):
             pending_events += list(agg._collect_())
 
         # To Aggregate
-        await self.recorder.add(
+        await self.repository.add(
             tuple(map(self.mapper.from_domain_event_to_stored_event, pending_events)),
             **kwargs,
         )
@@ -229,7 +232,7 @@ class EventStoreProxy(AbstractSqlAlchemyRepository):
 
         for domain_event in map(
             self.mapper.from_stored_event_to_domain_event,
-            await self.recorder.get(aggregate_id),
+            await self.repository.get(aggregate_id),
         ):
             aggregate = domain_event.mutate(aggregate)
         if aggregate is None:

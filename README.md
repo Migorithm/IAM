@@ -521,9 +521,155 @@ This `AbstractRepository` exposes public API. Note that `add` method not only re
 In this project, the followings are implemented:
 - `SqlAlchemyRepository` : Repository for SQLAlchemy which is itself abstraction over RDBMS data storage.
 - `OutboxRepository` : This inherits SqlAlchemyRepository just as it happens that RDBMS is source of truth. However, this can be changed if source of truth is not anymore RDBMS. 
-- `EventStoreRepository` : This is yet another Repository which inherit AbstractSqlAlchemyRepository, meaning that its implementation detail and how it overrides methods are different as query pattern diverges. 
+- `EventRepository` : This is yet another Repository which inherit AbstractSqlAlchemyRepository, meaning that its implementation detail and how it overrides methods are different as query pattern diverges. 
 <br>
 
-One more element that's part of repository is `EventStoreProxy` which is basically a proxy to `EventStoreRepository`. What is does is basically wraps the `EventStoreRepository` and adds more bahaviour before and after the access to events stored in eventstore.
+One more element that's part of repository is `EventRepositoryProxy` which is basically a proxy to `EventRepository`. What is does is basically wraps the `EventRepository` and adds more bahaviour before and after the access to events stored in eventstore. All the repositories are initialized in UnitOfWork, the concept of which will be explained later.  
+
+#### SqlAlchemyRepository
+```python
+class SqlAlchemyRepository(Generic[TAggregate], AbstractSqlAlchemyRepository):
+    def __init__(self, model: TAggregate, session: AsyncSession):
+        self.model = model
+        self.session = session
+        self._base_query = select(self.model)
+        self.external_backlogs: deque[aggregate_root.Aggregate.Event] = deque()
+        self.internal_backlogs: deque[aggregate_root.Aggregate.Event] = deque()
+        
+```
+Simply put, `SqlAlchemyRepository` is for `domain model` which is, complexity-wise, notch below `event-sourced model`. That's the reason why it takes `model:TAggregate` so it can be used for read model as well as write model.<br>
+
+#### OutboxRepository
+```python
+class OutboxRepository(SqlAlchemyRepository):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.mapper: Mapper[aggregate_root.Aggregate.Event] = Mapper()
+
+    def _add(self, *obj: aggregate_root.Aggregate.Event):
+        """
+        Map the obj to Outbox
+        """
+        for domain_event in obj:
+            _id, _, topic, state = self.mapper._convert_domain_event(domain_event)
+            self.session.add(
+                OutBox(id=uuid4(), aggregate_id=_id, topic=topic, state=state)
+            )
+
+```
+Extending `SqlAlchemyRepository`, it overrides `_add` method to convert domain model to storable form using `Mapper`. Its `_get` method is not to be used so exception raising code was implemented.<br>
+
+#### EventRepository
+```python
+class EventRepository(AbstractSqlAlchemyRepository):  
+    ...
+
+    async def _add(self, stored_events: Sequence[StoredEvent], **kwargs) -> None:
+        await self._insert_events(stored_events)
+
+    async def _insert_events(
+        self,
+        events: Sequence[StoredEvent],
+        *,
+        tb_name: str | None = None,
+        **kwargs,
+    ) -> None:
+        if len(events) == 0:
+            return
+
+        tb_name = self._events_table if tb_name is None else tb_name
+        keys = tuple(events[0].__dict__.keys())
+
+        raw_query = text(
+            f"""
+            INSERT INTO {tb_name} ({",".join(keys)})
+            VALUES ({",".join((":"+k for k in keys))})
+        """
+        )
+        try:
+            await self.session.execute(
+                raw_query,
+                [e.__dict__ for e in events],
+            )
+        except Exception as e:
+            raise self.IntegrityError(e)
+
+    async def _get(
+        self,
+        aggregate_id: UUID,
+        # gt: int | None = None,
+        # lte: int | None = None,
+        # desc: bool | None = False,
+        # limit: int | None = None
+    ) -> list[StoredEvent]:
+        # TODO need to add conditions
+        raw_query = text(
+            f"""
+            SELECT * FROM {self._events_table}
+            WHERE id = :id
+        """
+        )
+        c: CursorResult = await self.session.execute(raw_query, dict(id=aggregate_id))
+
+        stored_events = [
+            StoredEvent.from_kwargs(**row._mapping) for row in c.fetchall()
+        ]
+
+        return stored_events
+
+```
+Regarding complexity, `event-sourced model` is the most complicated, so much that you don't event want to think of getting multiple aggregates without CQRS. In fact, implementing CQRS becomes imperative when introducing the event-sourced model for a number of reasons, topic that's beyond the scope of this section.<br>
+
+To support bulk insert, SQLAlchemy core syntax was used in `_insert_events`. Note that `_get` method takes every events given the aggregate id and return stored events to its caller, which is in this context `EventRepositoryProxy`
+
+#### EventRepositoryProxy
+```python
+class EventRepositoryProxy(AbstractSqlAlchemyRepository):
+    def __init__(self, *, session: AsyncSession):
+        self.mapper: Mapper[aggregate_root.Aggregate.Event] = Mapper()
+        self.repository: EventRepository = EventRepository(
+            session=session, event_table_name=event_store.name
+        )
+        self.external_backlogs: deque[aggregate_root.Aggregate.Event] = deque()
+        self.internal_backlogs: deque[aggregate_root.Aggregate.Event] = deque()
+
+    def _add_hook(self, *obj: TAggregate):
+        for o in obj:
+            self.external_backlogs.extend(
+                filter(lambda e: e.externally_notifiable, o.events)
+            )
+            self.internal_backlogs.extend(
+                filter(lambda e: e.internally_notifiable, o.events)
+            )
+
+    async def _add(self, *aggregate: TAggregate, **kwargs) -> None:
+        pending_events = []
+        for agg in aggregate:
+            pending_events += list(agg._collect_())
+
+        # To Aggregate
+        await self.repository.add(
+            tuple(map(self.mapper.from_domain_event_to_stored_event, pending_events)),
+            **kwargs,
+        )
+
+    async def _get(
+        self,
+        aggregate_id: UUID,
+    ) -> aggregate_root.Aggregate:
+        aggregate = None
+
+        for domain_event in map(
+            self.mapper.from_stored_event_to_domain_event,
+            await self.repository.get(aggregate_id),
+        ):
+            aggregate = domain_event.mutate(aggregate)
+        if aggregate is None:
+            raise self.AggregateNotFoundError
+        assert isinstance(aggregate, aggregate_root.Aggregate)
+        return aggregate
+```
+Wrapper around `EventRepository` that adds more features such as `_add_hook` for distingguishing trasmittable events that go either to different aggregate or to different services, namely external backlogs and internal backlogs. Plus, as it takes `Mapper` as its attribute, it also handles directly mapping before and after accessing underlying `EventRepository`. Most notably, `_get` rehydrates aggregate with the events taken from `EventRepository` and return the aggregate. 
+
 
 

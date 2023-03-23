@@ -12,15 +12,15 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from app.adapters.repository import EventStoreProxy, TAggregate, OutboxRepository
+from app.adapters.repository import EventRepositoryProxy, TAggregate, OutboxRepository
 from app.domain.outbox import OutBox
 from sqlalchemy.orm import sessionmaker
 from app import config
 
 
 class AbstractUnitOfWork(Generic[TAggregate], ABC):
-    users: EventStoreProxy
-    groups: EventStoreProxy
+    users: EventRepositoryProxy
+    groups: EventRepositoryProxy
     outboxes: OutboxRepository
 
     async def commit(self):
@@ -93,7 +93,7 @@ class SqlAlchemyUnitOfWork(AbstractUnitOfWork):
             session_factory=self.session_factory,
             scopefunc=current_task,
         )()
-        self.event_store: EventStoreProxy = EventStoreProxy(
+        self.event_store: EventRepositoryProxy = EventRepositoryProxy(
             session=self.session,
         )
 

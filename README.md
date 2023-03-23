@@ -391,15 +391,6 @@ class Mapper(Generic[TDomainEvent], metaclass=SignletonMeta):
             state=state,
         )
 
-    def from_domain_event_to_outbox(self, domain_event: TDomainEvent) -> OutBoxEvent:
-        _id, _, topic, state = self._convert_domain_event(domain_event)
-
-        return OutBoxEvent(  # type: ignore
-            aggregate_id=_id,
-            topic=topic,
-            state=state,
-        )
-
     def from_stored_event_to_domain_event(self, stored: StoredEvent) -> TDomainEvent:
         dictified_state = self._convert_stored_event(stored)
         cls = resolver.resolve_topic(stored.topic)
@@ -410,9 +401,7 @@ class Mapper(Generic[TDomainEvent], metaclass=SignletonMeta):
 ```
 You can see that domain event is convereted firstly using `_convert_domain_event` method that applies
 comporession and encyprtion method if implemented together with encoding method to the event and render
-`StoredEvent` from `from_domain_event_to_stored_event` and `OutBoxEvent` from `from_domain_event_to_outbox`. 
-Outbox pattern is beyond the scope of this discussion but briefly it is a pattern to ensure event is not missing
-by storing an event in the same atomic transaction with domain event.<br><br>
+`StoredEvent` from `from_domain_event_to_stored_event`.<br><br>
 
 Conversely, you can also convert `StoredEvent` to `DomainEvent` using `from_stored_event_to_doamin_event` with the decoding strategy explained.
 
@@ -473,4 +462,68 @@ app
 │   │ handlers.py
 ...
 ```
+
+### Repository
+Repository is a simplifying abstraction over data storage that enables decoupling core logics from infrastructural concerns. Plus, repository is the public interface through which we can access aggregate, thereby enforcing the rule that says 'aggregates are the only way into our domain model.' You do not want to break that rule because otherwise you may fiddle with subentity of an aggregate, messing up the versioning, sabotaging sound transaction boundary.<br>
+
+```python
+class AbstractRepository(ABC):
+    def add(self, *obj, **kwargs):
+        self._add_hook(*obj, **kwargs)
+        return self._add(*obj, **kwargs)
+
+    def _add_hook(self, *obj, **kwargs):
+        pass
+
+    def add(self, *obj, **kwargs):
+        self._add_hook(*obj, **kwargs)
+        return self._add(*obj, **kwargs)
+
+    def _add_hook(self, *obj, **kwargs):
+        pass
+
+
+    async def get(self, ref: str | UUID, **kwargs):
+        res = await self._get(ref)
+        self._get_hook(res)
+        return res
+
+    def _get_hook(self, aggregate):
+        pass
+
+    async def list(self):
+        res = await self._list()
+        return res
+
+    @abstractmethod
+    def _add(self, *obj, **kwargs):
+        raise NotImplementedError
+
+    # @abstractmethod
+    async def _list(self):
+        raise NotImplementedError
+
+    @abstractmethod
+    async def _get(self, ref):
+        raise NotImplementedError
+
+    class OperationalError(Exception):
+        pass
+
+    class IntegrityError(Exception):
+        pass
+
+    class AggregateNotFoundError(Exception):
+        pass
+```
+This `AbstractRepository` exposes public API. Note that `add` method not only returns the result of `_add` which subclass must override but also adds `_add_hook` just in case there is some additional operation required, namely template method pattern.<br><br>
+
+In this project, the followings are implemented:
+- `SqlAlchemyRepository` : Repository for SQLAlchemy which is itself abstraction over RDBMS data storage.
+- `OutboxRepository` : This inherits SqlAlchemyRepository just as it happens that RDBMS is source of truth. However, this can be changed if source of truth is not anymore RDBMS. 
+- `EventStoreRepository` : This is yet another Repository which inherit AbstractSqlAlchemyRepository, meaning that its implementation detail and how it overrides methods are different as query pattern diverges. 
+<br>
+
+One more element that's part of repository is `EventStoreProxy` which is basically a proxy to `EventStoreRepository`. What is does is basically wraps the `EventStoreRepository` and adds more bahaviour before and after the access to events stored in eventstore.
+
 

@@ -24,7 +24,11 @@ class AbstractUnitOfWork(Generic[TAggregate], ABC):
     outboxes: OutboxRepository
 
     async def commit(self):
+        self._commit_hook()
         await self._commit()
+
+    def _commit_hook(self):
+        pass
 
     async def rollback(self):
         await self._rollback()
@@ -104,6 +108,10 @@ class SqlAlchemyUnitOfWork(AbstractUnitOfWork):
 
     async def _commit(self):
         await self.session.commit()
+
+    def _commit_hook(self):
+        for outbox in self.collect_backlogs(in_out="external_backlogs"):
+            self.outboxes.add(outbox)
 
     async def _rollback(self):
         await self.session.rollback()

@@ -23,12 +23,5 @@ class StoredEvent(meta.ImmutableObject):
     state: bytes  # Payload
 
 
-class OutBoxEvent(meta.ImmutableObject):
-    aggregate_id: str
-    topic: str
-    state: bytes
-    processed: bool = False
-
-
 class Notification(StoredEvent):
     nt_id: int

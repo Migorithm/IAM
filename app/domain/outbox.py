@@ -10,13 +10,13 @@ class Event(Protocol):
 
 @dataclass(eq=False)
 class OutBox:
-    create_dt: datetime = field(repr=False)
+    create_dt: datetime = field(init=False, repr=False)
     id: UUID
     aggregate_id: UUID
     topic: str
-    state: dict
-    event: Event
+    state: dict | bytes
     processed: bool = False
+    event: Event | None = None
 
     def dict(self):
         return dict(

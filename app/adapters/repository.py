@@ -1,16 +1,14 @@
 from abc import ABC, abstractmethod
 from collections import deque
 from typing import Generic, Sequence, TypeVar
-from uuid import UUID
+from uuid import UUID, uuid4
 from sqlalchemy import text
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy.engine.row import RowMapping
 from sqlalchemy.engine.cursor import CursorResult
-from app.utils import resolver
-from app.utils.events.domain_event import OutBoxEvent, StoredEvent
-from app.utils.events.mapper import Mapper, transcoder, TDomainEvent
+from app.utils.events.domain_event import StoredEvent
+from app.utils.events.mapper import Mapper
 from app.adapters.eventstore import event_store
 from app.utils.models import aggregate_root
 from app.domain.outbox import OutBox
@@ -74,11 +72,15 @@ class SqlAlchemyRepository(Generic[TAggregate], AbstractSqlAlchemyRepository):
         self._base_query = select(self.model)
         self.external_backlogs: deque[aggregate_root.Aggregate.Event] = deque()
         self.internal_backlogs: deque[aggregate_root.Aggregate.Event] = deque()
+        self.mapper: Mapper[aggregate_root.Aggregate.Event] = Mapper()
 
     def _add(self, *obj):
         self.session.add_all(obj)
 
     def _add_hook(self, *obj: TAggregate):
+        """
+        Filter out exportable events, inserts them to external_backlogs
+        """
         for o in obj:
             self.external_backlogs.extend(
                 filter(lambda e: e.externally_notifiable, o.events)
@@ -97,10 +99,19 @@ class SqlAlchemyRepository(Generic[TAggregate], AbstractSqlAlchemyRepository):
         return q.scalars().all()
 
 
-class OutboxRepository(SqlAlchemyRepository, Generic[TDomainEvent]):
+class OutboxRepository(SqlAlchemyRepository):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.transcoder = transcoder
+
+    def _add(self, *obj: aggregate_root.Aggregate.Event):
+        """
+        Map the obj to Outbox
+        """
+        for domain_event in obj:
+            _id, _, topic, state = self.mapper._convert_domain_event(domain_event)
+            self.session.add(
+                OutBox(id=uuid4(), aggregate_id=_id, topic=topic, state=state)
+            )
 
     async def _list(self):
         raw_query = text(
@@ -112,21 +123,9 @@ class OutboxRepository(SqlAlchemyRepository, Generic[TDomainEvent]):
         q: CursorResult = await self.session.execute(raw_query)
 
         return [
-            OutBox(event=self.take_event(row._mapping), **row._mapping)
+            OutBox(event=self.mapper.take_event(row._mapping), **row._mapping)
             for row in q.fetchall()
         ]
-
-    def take_event(self, decodable: RowMapping) -> dict:
-        try:
-            d: dict = self.transcoder.decode(decodable["state"])
-            d["id"] = decodable.get("aggregate_id")
-            cls = resolver.resolve_topic(decodable["topic"])
-            event_cls: TDomainEvent = object.__new__(cls)
-            event = event_cls.from_kwargs(**d)
-
-        except KeyError:
-            print("'state' doesn't exist!")
-        return event
 
 
 class EventStoreRepository(AbstractSqlAlchemyRepository):
@@ -134,21 +133,17 @@ class EventStoreRepository(AbstractSqlAlchemyRepository):
         self,
         session: AsyncSession,
         event_table_name: str = "iam_event_store",
-        outbox_table_name="iam_service_outbox",
     ) -> None:
         self.session = session
 
         self._events_table = event_table_name
-        self._outbox_table = outbox_table_name
 
-    async def _add(
-        self, stored_events: Sequence[StoredEvent | OutBoxEvent], **kwargs
-    ) -> None:
+    async def _add(self, stored_events: Sequence[StoredEvent], **kwargs) -> None:
         await self._insert_events(stored_events)
 
     async def _insert_events(
         self,
-        events: Sequence[StoredEvent | OutBoxEvent],
+        events: Sequence[StoredEvent],
         *,
         tb_name: str | None = None,
         **kwargs,
@@ -219,18 +214,6 @@ class EventStoreProxy(AbstractSqlAlchemyRepository):
         pending_events = []
         for agg in aggregate:
             pending_events += list(agg._collect_())
-
-        # To Outbox
-        await self.recorder.add(
-            tuple(
-                map(
-                    self.mapper.from_domain_event_to_outbox,
-                    filter(lambda x: x.externally_notifiable, pending_events),
-                )
-            ),
-            tb_name=self.recorder._outbox_table,
-            **kwargs,
-        )
 
         # To Aggregate
         await self.recorder.add(

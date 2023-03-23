@@ -6,7 +6,7 @@ from copy import copy
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Generic, Protocol, TypeVar, cast
+from typing import Any, Generic, Mapping, Protocol, TypeVar, cast
 from uuid import UUID
 
 from asyncpg.pgproto import pgproto
@@ -14,7 +14,7 @@ from asyncpg.pgproto import pgproto
 from .meta import SignletonMeta
 
 from .. import resolver
-from .domain_event import DomainEvent, StoredEvent, OutBoxEvent
+from .domain_event import DomainEvent, StoredEvent
 
 
 # Protocols
@@ -268,14 +268,14 @@ class Mapper(Generic[TDomainEvent], metaclass=SignletonMeta):
         domain_event: TDomainEvent = object.__new__(cls)
         return domain_event.from_kwargs(**dictified_state)
 
-    def from_domain_event_to_outbox(self, domain_event: TDomainEvent) -> OutBoxEvent:
-        """
-        Maps a domain event object to a Outbox Event
-        """
-        _id, _, topic, state = self._convert_domain_event(domain_event)
+    def take_event(self, decodable: Mapping) -> dict:
+        try:
+            d: dict = self.transcoder.decode(decodable["state"])
+            d["id"] = decodable.get("aggregate_id")
+            cls = resolver.resolve_topic(decodable["topic"])
+            event_cls: TDomainEvent = object.__new__(cls)
+            event = event_cls.from_kwargs(**d)
 
-        return OutBoxEvent(  # type: ignore
-            aggregate_id=_id,
-            topic=topic,
-            state=state,
-        )
+        except KeyError:
+            print("'state' doesn't exist!")
+        return event

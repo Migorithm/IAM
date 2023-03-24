@@ -467,6 +467,7 @@ app
 Repository is a simplifying abstraction over data storage that enables decoupling core logics from infrastructural concerns. Plus, repository is the public interface through which we can access aggregate, thereby enforcing the rule that says 'aggregates are the only way into our domain model.' You do not want to break that rule because otherwise you may fiddle with subentity of an aggregate, messing up the versioning, sabotaging sound transaction boundary.<br>
 
 ```python
+#app.adapters.repository
 class AbstractRepository(ABC):
     def add(self, *obj, **kwargs):
         self._add_hook(*obj, **kwargs)
@@ -528,6 +529,7 @@ One more element that's part of repository is `EventRepositoryProxy` which is ba
 
 #### SqlAlchemyRepository
 ```python
+#app.adapters.repository
 class SqlAlchemyRepository(Generic[TAggregate], AbstractSqlAlchemyRepository):
     def __init__(self, model: TAggregate, session: AsyncSession):
         self.model = model
@@ -541,6 +543,7 @@ Simply put, `SqlAlchemyRepository` is for `domain model` which is, complexity-wi
 
 #### OutboxRepository
 ```python
+#app.adapters.repository
 class OutboxRepository(SqlAlchemyRepository):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -561,6 +564,7 @@ Extending `SqlAlchemyRepository`, it overrides `_add` method to convert domain m
 
 #### EventRepository
 ```python
+#app.adapters.repository
 class EventRepository(AbstractSqlAlchemyRepository):  
     ...
 
@@ -624,6 +628,7 @@ To support bulk insert, SQLAlchemy core syntax was used in `_insert_events`. Not
 
 #### EventRepositoryProxy
 ```python
+#app.adapters.repository
 class EventRepositoryProxy(AbstractSqlAlchemyRepository):
     def __init__(self, *, session: AsyncSession):
         self.mapper: Mapper[aggregate_root.Aggregate.Event] = Mapper()
@@ -672,4 +677,66 @@ class EventRepositoryProxy(AbstractSqlAlchemyRepository):
 Wrapper around `EventRepository` that adds more features such as `_add_hook` for distingguishing trasmittable events that go either to different aggregate or to different services, namely external backlogs and internal backlogs. Plus, as it takes `Mapper` as its attribute, it also handles directly mapping before and after accessing underlying `EventRepository`. Most notably, `_get` rehydrates aggregate with the events taken from `EventRepository` and return the aggregate. 
 
 
+### ORM
+To achieve DIP, your domain model should depend on ORM but rather, ORM should depend on your domain model. This becomes particularly important when you have to port database storage to NoSQL-based one from RDBMS. Using `declarative mapping`, however, hinders you from doing so as it is used with domain model where it is declared. For that reason in this project, `classical mapping` and then the table object is mapped to domain model using `start_mappers()` method.<br>
 
+```python
+#app.adapters.orm
+
+...
+
+def start_mappers():
+    mapper_registry.map_imperatively(
+        iam.User,
+        users,
+        properties={
+            "group_roles": relationship(
+                iam.GroupRoles,
+                back_populates="users",
+                secondary=group_role_user_associations,
+                primaryjoin=f"{users.name}.c.id=={group_role_user_associations.name}.c.user_id",
+                secondaryjoin=f"{group_role_user_associations.name}.c.group_role_id=={group_roles.name}.c.id",
+                uselist=True,
+                collection_class=set,
+                innerjoin=False,
+            ),
+        },
+        eager_defaults=True,
+    )
+    ...
+```
+Mapping method deserves some explanation. `map_imperatively` is method that's attached to `sqlalchemy.orm.registry` which is initialized with `sqlalchemy.MetaData`. What it essentially does is to map table object to domain model(or class) you define in your project. Here, `iam.User` and `iam.GroupRoles` are defined in `app.domain.iam`.<br><br>
+
+With the two positional argument being domain model and table model passed, there are some keyword arguments worth paying attention to:<br>
+- `properties`
+- `eager_defaults`
+- `version_id_col`
+- `version_id_generator`
+
+#### `properties`
+This keyword argument passed to `map_imperatively` is mainly to define relationship, hence requiring `sqlalchemy.relationship`.<br><br> 
+
+Short note on keyword argument passed to `relationship` function:<br>
+- `back_populates` : how the given referent calls referer. That is to say, how `iam.GroupRoles` referes to `iam.User`. 
+- `secondary` : this is an example of how you achieve `many to many` relationship in SQLAlchemy. Here association table is `group_role_user_association` and it must have foreign keys pointing to both `iam.GroupRoles` and `iam.User`. 
+- `primaryjoin`, `secondaryjoin` : Once secondary is determined, you can specify how you can map many side to the other. This is to define how you join the two. 
+- `uselist` : Sometimes, the relationship is not necessarily `many to many` nor `one to many`. So, you can give `False` to uselist so it can refer to only one instance, if any.
+- `collection_class` : Setting this value `set` or `list`, the relationship is put into the given set. The small detail about this is either set or list is not exactly the same as built-in version of them. 
+- `innerjoin` : By default, relationship is joined using `outerjoin` which is for optional values that are mostly the case albeit with performance hit. If you are sure that the entities in relationship co-exist, you can give `True` to this. 
+
+#### `eager_defaults`
+If true, the ORM will fetch the value of server-generated values to the object, thereby obviating the need for `refresh`. The process is done by using backend's `RETURNING` inline or `SELECT` statement when the backend doesn't support it.<br>
+
+
+#### `version_id_col`
+This is to specify the column used for versioning. The purpose of versioning is to detect when two concurrent transactions are modifying the same row at roughly the same time. To grasp the true meaning of this, you have to also understand isolation level. In this proeject, it assumes the level being below `repeatable read`. This column ensures that all the updates are versioned by sending update query that looks like:<br>
+
+```sql
+UPDATE user SET version_id=:version_id, name=:name
+WHERE user.id = :user_id AND user.version_id = :user_version_id
+-- {"name": "new name", "version_id": 2, "user_id": 1, "user_version_id": 1}
+```
+The above UPDATE statement is updating the row that not only matches user.id = 1, it also is requiring that user.version_id = 1, where “1” is the last version identifier we’ve been known to use on this object. Note therefore that if you want to manage the value on application side, if you shouldn't fiddle with the version column, which is restrictive in a situation where you want to keep the record of all the version and some updates are sensitive to versioning while others are not. In this case, you need `version_id_generator`.
+
+#### `version_id_generator` - Programmatic or Conditional Version Counters
+When `version_id_generator` is set to False, we can programmatically set the version on our object. We can update our custom object without incrementing the version counter as well; the value of the counter will remain unchanged, and the UPDATE statement will still check against the previous value. This may be useful for schemes where only certain classes of UPDATE are sensitive to concurrency issues. 

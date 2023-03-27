@@ -68,13 +68,15 @@ engine = create_async_engine(
     max_overflow=20,
     future=True,
 )
-async_transactional_session = sessionmaker(
-    engine, expire_on_commit=False, class_=AsyncSession
+async_transactional_session = async_scoped_session(
+    sessionmaker(engine, expire_on_commit=False, class_=AsyncSession),
+    scopefunc=current_task,
 )
 autocommit_engine = engine.execution_options(isolation_level="AUTOCOMMIT")
 
-async_autocommit_session = sessionmaker(
-    autocommit_engine, expire_on_commit=False, class_=AsyncSession
+async_autocommit_session = async_scoped_session(
+    sessionmaker(autocommit_engine, expire_on_commit=False, class_=AsyncSession),
+    scopefunc=current_task,
 )
 
 DEFAULT_SESSION_TRANSACTIONAL_SESSION_FACTORY = async_transactional_session
@@ -89,10 +91,7 @@ class SqlAlchemyUnitOfWork(AbstractUnitOfWork):
         )
 
     async def __aenter__(self):
-        self.session: AsyncSession = async_scoped_session(
-            session_factory=self.session_factory,
-            scopefunc=current_task,
-        )()
+        self.session: AsyncSession = self.session_factory()
         self.event_store: EventRepositoryProxy = EventRepositoryProxy(
             session=self.session,
         )
@@ -110,6 +109,7 @@ class SqlAlchemyUnitOfWork(AbstractUnitOfWork):
         await self.session.commit()
 
     def _commit_hook(self):
+        # TODO Test
         for outbox in self.collect_backlogs(in_out="external_backlogs"):
             self.outboxes.add(outbox)
 

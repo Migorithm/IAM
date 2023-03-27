@@ -739,4 +739,202 @@ WHERE user.id = :user_id AND user.version_id = :user_version_id
 The above UPDATE statement is updating the row that not only matches user.id = 1, it also is requiring that user.version_id = 1, where “1” is the last version identifier we’ve been known to use on this object. Note therefore that if you want to manage the value on application side, if you shouldn't fiddle with the version column, which is restrictive in a situation where you want to keep the record of all the version and some updates are sensitive to versioning while others are not. In this case, you need `version_id_generator`.
 
 #### `version_id_generator` - Programmatic or Conditional Version Counters
-When `version_id_generator` is set to False, we can programmatically set the version on our object. We can update our custom object without incrementing the version counter as well; the value of the counter will remain unchanged, and the UPDATE statement will still check against the previous value. This may be useful for schemes where only certain classes of UPDATE are sensitive to concurrency issues. 
+When `version_id_generator` is set to False, we can programmatically set the version on our object. We can update our custom object without incrementing the version counter as well; the value of the counter will remain unchanged, and the UPDATE statement will still check against the previous value. This may be useful for schemes where only certain classes of UPDATE are sensitive to concurrency issues.<br>
+
+
+### Unit Of Work
+Unit of Work (UoW) pattern is our abstraction over the idea of atomic operations. It will allow us to fully decouple our service layer from infra-rlated concern. UOW collaboates with repositories we defined and each handler in service layer start a UOW as a context manager, the start of transaction.<br><br>
+
+But what if you don't want to begin a transaction? Then you need different type of 
+
+
+#### Autocommit vs transactional session
+```python
+#app.service_layer.unit_of_work
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_scoped_session,
+    create_async_engine,
+)
+
+engine = create_async_engine(
+    config.db_settings.get_uri(),
+    pool_pre_ping=True,
+    pool_size=10,
+    max_overflow=20,
+    future=True,
+)
+async_transactional_session = async_scoped_session(
+    sessionmaker(engine, expire_on_commit=False, class_=AsyncSession),
+    scopefunc=current_task,
+)
+autocommit_engine = engine.execution_options(isolation_level="AUTOCOMMIT")
+
+async_autocommit_session = async_scoped_session(
+    sessionmaker(autocommit_engine, expire_on_commit=False, class_=AsyncSession),
+    scopefunc=current_task,
+)
+
+DEFAULT_SESSION_TRANSACTIONAL_SESSION_FACTORY = async_transactional_session
+
+```
+Here we have `async_transactioanl_session` and `async_autocommit_session` despite its awfully confusing name, autocommit here means that the DBAPI does not use a transaction under any circumstances. For this reason, it is typical, though not strictly required, that a Session with AUTOCOMMIT isolation be used in a read-only fashion. 
+
+#### SqlAlchemyUnitOfWork
+```python
+#app.service_layer.unit_of_work
+class SqlAlchemyUnitOfWork(AbstractUnitOfWork):
+    def __init__(self, session_factory=None):
+        self.session_factory = (
+            DEFAULT_SESSION_TRANSACTIONAL_SESSION_FACTORY
+            if session_factory is None
+            else session_factory
+        )
+
+    async def __aenter__(self):
+        self.session: AsyncSession = self.session_factory()
+        self.event_store: EventRepositoryProxy = EventRepositoryProxy(
+            session=self.session,
+        )
+
+        self.users = weakref.proxy(self.event_store)
+        self.groups = weakref.proxy(self.event_store)
+        self.outboxes = OutboxRepository(model=OutBox, session=self.session)
+        return self
+
+    async def __aexit__(self, *args, **kwargs):
+        await self.rollback()
+        await self.session.close()
+
+    async def _commit(self):
+        await self.session.commit()
+```
+You see that `SqlalchemyUnitOfWork` optionally takes default session if no factory is given. And async context manager `async def __aenter__` is defined, initializing `self.session`, `self.event_store`, and domain models. In this project, as only data stroage we have is RDBMS, we only need one type of UnitOfWork but if your project included heterogenous data stroages, you may consider implementing different kinds of UOWs. 
+
+
+### Service Layer - handler
+Handler is what provides public interface of your service and processes commands. It receives commands and start Unit of work, and invokes appropriate command methods given an aggregate.<br>
+```python
+class IAMService:
+    @classmethod
+    async def create_user(
+        cls, msg: commands.CreateUser, *, uow: AbstractUnitOfWork
+    ) -> UUID:
+        async with uow:
+            user = iam.User.create(msg)
+            await uow.users.add(user)
+            await uow.commit()
+            return user.id
+
+```
+
+
+### Service Layer - messagebus
+In MSA, what really matters is message. And message can be either event or command. Note that, however, event here does NOT mean that it is the same event as domain event. While domain event is contained strictly in one aggregate and service, in the context of MSA, contexts are supposed to be bounded to a certain subdomain, so events here mean either `event carried state transfer` or `notification`. In your service, it is expected that you have handlers for each of these messages and what messagebus does is basically taking the messages and dispatch them to appropriate handlers.<br>
+
+```python
+#app.service_layer.messagebus
+
+class MessageBus:
+    def __init__(
+        self,
+        event_handlers: dict[Type[DomainEvent], list[Callable]],
+        command_handlers: dict[Type[Command], Callable],
+        uow: Type[SqlAlchemyUnitOfWork] = SqlAlchemyUnitOfWork,
+    ):
+        self.uow = uow
+        self.event_handlers = event_handlers
+        self.command_handlers = command_handlers
+
+    async def handle(
+        self, message: Message
+    ) -> deque[Any]:  # Return type need to be specified?
+        queue: deque = deque([message])
+        uow = self.uow()
+        results: deque = deque()
+        while queue:
+            message = queue.popleft()
+            logger.info("handling message %s", message.__class__.__name__)
+            match message:
+                case DomainEvent():
+                    await self.handle_event(message, queue, results, uow)
+                case Command():
+                    cmd_result = await self.handle_command(message, queue, uow)
+                    results.append(cmd_result)
+                case _:
+                    logger.error(f"{message} was not an Event or Command")
+                    raise Exception
+        return results
+
+    async def handle_event(
+        self,
+        event: DomainEvent,
+        queue: deque,
+        results: deque,
+        uow: SqlAlchemyUnitOfWork,
+    ):
+        for handler in self.event_handlers[type(event)]:
+            try:
+                logger.debug("handling event %s with handler %s", event, handler)
+                res = (
+                    await handler(event, uow=uow)
+                    if "uow" in handler.__code__.co_varnames
+                    else await handler(event)
+                )
+
+                # Handle only internal backlogs that should be handled within the bounded context
+                queue.extend(uow.collect_backlogs(in_out="internal_backlogs"))
+
+                # Normally, event is not supposed to return result but when it must, resort to the following.
+                if res:
+                    results.append(res)
+            except StopSentinel as e:
+                logger.error("%s", str(e))
+
+                # If failover strategy is implemented even is appended
+                if e.event:
+                    queue.append(e.event)
+
+                # Break the loop upon the reception of stop sentinel
+                break
+            except Exception as error:
+                logger.exception(f"exception while handling event {str(error)}")
+
+    async def handle_command(
+        self, command: Command, queue: deque, uow: SqlAlchemyUnitOfWork
+    ):
+        logger.debug("handling command %s", command)
+        try:
+            handler = self.command_handlers[type(command)]
+            res = (
+                await handler(command, uow=uow)
+                if "uow" in handler.__code__.co_varnames
+                else await handler(command)
+            )
+            queue.extend(uow.collect_backlogs(in_out="internal_backlogs"))
+            return res
+        except Exception as e:
+            logger.exception(f"exception while handling command {str(e)}")
+            raise e
+
+```
+By design, your messagebus is instansiated somewhere and handle each messages using `handle` method. Inside the `handle` method, a deque is instantiated with the message you've gotten and while there is a message, it processes the message with two submethods, `handle_event` and `handle_command`, respectively. Finally it returns results back to caller that is mainly for command as it requires return value back to the client, which is not normally expected from the event handler. Essetianlly, that is what makes difference between event and command. While operations caused by both command and event expect changes to an aggregate, command expects return value back to client, which is not usually the case for event.<br><br>
+
+Now, let's look at how event handlers and command handlers could be defined:<br>
+```python
+from app.domain import commands
+from app.domain import events
+EVENT_HANDLERS: dict = {
+    events.UserCreated : [
+            handlers.IAMService.notify_user_creation,
+            handlers.IAMService.issue_promotion_token
+            ]
+}
+
+
+COMMAND_HANDLERS: dict = {
+    commands.CreateUser: handlers.IAMService.create_user,
+    commands.RequestCreateGroup: handlers.IAMService.request_create_group,
+}
+```
+Here comes yet another differences between command and event; while event may or may not be mapped to list of handlers, command is mapped to only one handler. So, events are raised as a spin-off of command. 

@@ -938,3 +938,25 @@ COMMAND_HANDLERS: dict = {
 }
 ```
 Here comes yet another differences between command and event; while event may or may not be mapped to list of handlers, command is mapped to only one handler. So, events are raised as a spin-off of command. 
+
+
+### Bootstrapping - Manual DI
+Declaring an explicit dependency is an example of DIP - rather than having implicit dependencies on **specific** detail by having module import, we want to have an explicit dependency on **abstraction**. That is to say, instead of having a program like:
+```python
+from . import send_email
+
+def send_out_notification(event: events.TransactionCleared):
+    send_email("migo@mail.com","Hello")
+    ...
+```
+
+We want to have something like this:
+
+```python
+def send_out_notification(event:events.TransactionCleared,send_mail:Callble):
+    send_mail("migo@mail.com","Hello")
+```
+What it enables is basically choosing the dpenendency we want depending on environemnt(e.g., test environement), and avoiding a violation of the single responsibility principle(SRP). Here, we reach for a parttern called `Composition Root` that is a bootstrap script, and we'll do a bit of Manual DI(dependency injection without a framework).<br><br>
+
+Introducing this pattern means your entrypoints initialize bootstrapper so it can prepare handlers with injected dependencies, and pass the dependency-injected hanlders to messagebus.
+

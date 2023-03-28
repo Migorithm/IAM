@@ -86,7 +86,7 @@ class MessageBus:
             handler = self.command_handlers[type(command)]
             res = (
                 await handler(command, uow=uow)
-                if "uow" in handler.__code__.co_varnames
+                if getattr(handler, "uow_required", False)
                 else await handler(command)
             )
             queue.extend(uow.collect_backlogs(in_out="internal_backlogs"))

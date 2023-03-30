@@ -866,6 +866,7 @@ class MessageBus:
                     raise Exception
         return results
 
+
     async def handle_event(
         self,
         event: DomainEvent,
@@ -878,7 +879,7 @@ class MessageBus:
                 logger.debug("handling event %s with handler %s", event, handler)
                 res = (
                     await handler(event, uow=uow)
-                    if "uow" in handler.__code__.co_varnames
+                    if getattr(handler, "uow_required", False)
                     else await handler(event)
                 )
 
@@ -908,7 +909,7 @@ class MessageBus:
             handler = self.command_handlers[type(command)]
             res = (
                 await handler(command, uow=uow)
-                if "uow" in handler.__code__.co_varnames
+                if getattr(handler, "uow_required", False)
                 else await handler(command)
             )
             queue.extend(uow.collect_backlogs(in_out="internal_backlogs"))
@@ -958,5 +959,103 @@ def send_out_notification(event:events.TransactionCleared,send_mail:Callble):
 ```
 What it enables is basically choosing the dpenendency we want depending on environemnt(e.g., test environement), and avoiding a violation of the single responsibility principle(SRP). Here, we reach for a parttern called `Composition Root` that is a bootstrap script, and we'll do a bit of Manual DI(dependency injection without a framework).<br><br>
 
-Introducing this pattern means your entrypoints initialize bootstrapper so it can prepare handlers with injected dependencies, and pass the dependency-injected hanlders to messagebus.
+Introducing this pattern means your entrypoints initialize bootstrapper so it can prepare handlers with injected dependencies, and pass the dependency-injected hanlders to messagebus.<br>
+
+#### Initialization
+
+```python
+#app.bootstrap
+
+class Bootstrap:
+    def __init__(
+        self,
+        uow: Type[
+            unit_of_work.SqlAlchemyUnitOfWork
+        ] = unit_of_work.SqlAlchemyUnitOfWork,
+        event_handlers: dict | None = None,
+        command_handlers: dict | None = None,
+        **kwargs,  # accept kwargs for testability
+    ):
+        self.uow = uow
+
+        self.event_handlers = (
+            event_handlers if event_handlers is not None else copy(EVENT_HANDLERS)
+        )
+        self.command_handlers = (
+            command_handlers if command_handlers is not None else copy(COMMAND_HANDLERS)
+        )
+        self.dependencies = {k: v for k, v in kwargs.items()}
+
+```
+As bootstrap is what loads and inject dependencies into handlers, Bootstrap itself should be initialize when program boots up. It means that it should be at the top level of the project.<br><br>
+
+When initialized, both `even_handlers` and `command_handlers` are optioanlly passed for the sake of testability. See the following:
+```python
+#test_bootstrapper.py
+
+@pytest.mark.asyncio
+async def test_bootstrapper():
+    ...
+
+    bootstrap = Bootstrap(
+        command_handlers={TestCommand: FakeService.test_command},
+        event_handlers={TestEvent: [FakeService.test_event]},
+        injected_func=injectable_func,
+    )
+    ...
+```
+As you can see, by optionally taking handler arguments, you can test out if bootstrap itself works according to what you need it for.
+
+#### Invoking Bootstrapper
+```python
+
+class Bootstrap:
+    ...
+
+
+    def __call__(self):
+        # dependencies: dict = {}
+        injected_event_handlers = {
+            event_type: [
+                inject_dependencies(handler, self.dependencies)
+                for handler in listed_handlers
+            ]
+            for event_type, listed_handlers in self.event_handlers.items()
+        }
+        injected_command_handlers = {
+            command_type: inject_dependencies(handler, self.dependencies)
+            for command_type, handler in self.command_handlers.items()
+        }
+
+        return MessageBus(
+            uow=self.uow,
+            event_handlers=injected_event_handlers,
+            command_handlers=injected_command_handlers,
+        )
+    ...
+
+```
+
+After the initialization, you can invoke `__call__` method as per your need and it returns initialized `MessageBus` object with dependency injected handlers. The dependency injection could be simply making lambda or creating function capturing the variable using closure, using `inject_dependencies`.<br>
+
+#### `inject_dependencies`
+
+```python
+def inject_dependencies(handler, dependencies: dict) -> Callable:
+    params = inspect.signature(handler).parameters
+    deps = {
+        name: dependency for name, dependency in dependencies.items() if name in params
+    }
+
+    # Create function dynamically
+    return render_injected_function(handler=handler, **deps)
+
+
+def render_injected_function(handler, **kwrags) -> Callable:
+    func = partial(handler, **kwrags)
+    setattr(func, "uow_required", handler.uow_required)
+    return func
+
+```
+What the listed functions do is taking function signatures and create dependencies, and return injected function. 
 

@@ -56,7 +56,7 @@ class MessageBus:
                 logger.debug("handling event %s with handler %s", event, handler)
                 res = (
                     await handler(event, uow=uow)
-                    if "uow" in handler.__code__.co_varnames
+                    if getattr(handler, "uow_required", False)
                     else await handler(event)
                 )
 
